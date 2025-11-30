@@ -21,7 +21,7 @@ import pandas as pd
 import alpaca_trade_api as tradeapi
 from alpaca_trade_api.rest import APIError
 
-from strategy import MeanReversionStrategy
+from strategy import MeanReversionStrategy, build_strategy_from_config
 
 
 CONFIG_PATH = Path(__file__).resolve().parent / "alpaca_config.json"
@@ -87,7 +87,7 @@ def fetch_bars(client: tradeapi.REST, symbol: str, start: str, end: str,
     barset = client.get_bars(symbol, timeframe, start=start_iso, end=end_iso, limit=limit)
     df = barset.df
     if df.empty:
-        raise ValueError("No bar data returned. Check your subscription and date range.")
+        raise ValueError("Charlie: No bar data returned after running fetch_bars")
     # handle multi-index (symbol, timestamp) and single-index cases
     if isinstance(df.index, pd.MultiIndex):
         sym_df = df.xs(symbol, level=0).reset_index()
@@ -118,27 +118,31 @@ def generate_signals(df: pd.DataFrame, strategy: MeanReversionStrategy) -> pd.Da
 def main() -> None:
     cfg = load_config()
     client = get_client(cfg)
+    # Determine window: if live_trading, use rolling window to now; otherwise use config start/end
+    live_trading = bool(cfg.get("live_trading", False))
+    start_date = cfg.get("start_date")
+    end_date = cfg.get("end_date")
+    if live_trading:
+        now = pd.Timestamp.utcnow()
+        lookback_days = int(cfg.get("lookback_days", 3))
+        start_date = (now - pd.Timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+        end_date = now.strftime("%Y-%m-%d")
+    else:
+        if not start_date or not end_date:
+            raise ValueError("Backtest mode requires start_date and end_date in config.")
     # Fetch data
     df = fetch_bars(
         client,
         cfg["symbol"],
-        cfg["start_date"],
-        cfg["end_date"],
+        start_date,
+        end_date,
         cfg.get("timeframe", "1Min"),
     )
     outfile = cfg.get("outfile", "alpaca_data.csv")
     df.to_csv(outfile, index=False)
-    print(f"Fetched {len(df)} bars for {cfg['symbol']} from {cfg['start_date']} to {cfg['end_date']}.")
+    print(f"Charlie: Fetched {len(df)} bars for {cfg['symbol']} from {start_date} to {end_date}.")
     # Generate signals
-    lookback_days = int(cfg.get("lookback_days", 3))
-    lookback_bars = lookback_days * 390  # approx minutes per trading day
-    strategy = MeanReversionStrategy(
-        lookback_bars=lookback_bars,
-        upper_pct=float(cfg.get("upper_pct", 0.95)),
-        lower_pct=float(cfg.get("lower_pct", 0.05)),
-        flat_upper=float(cfg.get("flat_upper", 0.65)),
-        flat_lower=float(cfg.get("flat_lower", 0.35)),
-    )
+    strategy = build_strategy_from_config(cfg)
     df_with_signals = generate_signals(df, strategy)
     print(df_with_signals[["Datetime", "Close", "signal"]].head(20))
     submit_orders = bool(cfg.get("submit_orders", False))
@@ -187,13 +191,12 @@ def main() -> None:
                 last_order_ts = ts_dt
             except APIError as exc:
                 # Skip orders rejected for wash-trade detection or other soft failures
-                print(f"Skipped order at {ts} ({side} {qty}): {exc}")
+                print(f"Charlie: Skipped order at {ts} ({side} {qty}): {exc}")
                 continue
-        print(f"Submitted {len(submitted)} paper orders.")
-        for o in submitted[:10]:
-            print(o)
-        if len(submitted) > 10:
-            print("... (truncated)")
+        print(f"Charlie: Submitted {len(submitted)} paper orders.")
+        log_path = cfg.get("submitted_log", "alpaca_submitted_orders.csv")
+        pd.DataFrame(submitted).to_csv(log_path, index=False)
+        print(f"Charlie: Order log saved to {log_path}")
     else:
         print("Signal generation only.")
 

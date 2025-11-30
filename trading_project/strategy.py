@@ -32,7 +32,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Dict, Optional
 
 import numpy as np
 import pandas as pd
@@ -191,3 +191,21 @@ class MeanReversionStrategy(Strategy):
                 position = 0
             signals.iloc[idx] = position
         return signals
+
+
+def build_strategy_from_config(cfg: Dict[str, Any]) -> Strategy:
+    """Factory to construct a Strategy from config settings."""
+    strategy_type = cfg.get("strategy", "mean_reversion")
+    if strategy_type != "mean_reversion":
+        raise ValueError(f"Unsupported strategy type: {strategy_type}")
+    lookback_bars = cfg.get("lookback_bars")
+    if lookback_bars is None:
+        lookback_days = int(cfg.get("lookback_days", 3))
+        lookback_bars = lookback_days * 390
+    return MeanReversionStrategy(
+        lookback_bars=int(lookback_bars),
+        upper_pct=float(cfg.get("upper_pct", 0.95)),
+        lower_pct=float(cfg.get("lower_pct", 0.05)),
+        flat_upper=float(cfg.get("flat_upper", 0.65)),
+        flat_lower=float(cfg.get("flat_lower", 0.35)),
+    )
